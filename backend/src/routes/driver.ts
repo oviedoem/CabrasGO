@@ -2,8 +2,18 @@ import { Router } from "express";
 import { prisma } from "../lib/prisma";
 import { requireAuth, AuthedRequest } from "../lib/auth";
 import { getIo } from "../ws/socket";
+import { getPlatformConfig } from "../lib/platformConfig";
+import { checkAndGrantWeeklyBonus } from "../lib/weeklyBonus";
 
 export const driverRouter = Router();
+
+driverRouter.get("/ads", requireAuth("DRIVER"), async (_req, res) => {
+  const ads = await prisma.adCampaign.findMany({
+    where: { active: true, OR: [{ targetAudience: "CONDUCTOR" }, { targetAudience: "AMBOS" }] },
+    orderBy: { createdAt: "desc" },
+  });
+  res.json({ ads });
+});
 
 async function getDriverOrFail(req: AuthedRequest, res: any) {
   const driverId = req.auth!.driverId;
@@ -35,6 +45,7 @@ driverRouter.get("/me", requireAuth("DRIVER"), async (req: AuthedRequest, res) =
     totalTrips: driver.user.totalTrips,
     lat: driver.currentLatitude ? Number(driver.currentLatitude) : null,
     lng: driver.currentLongitude ? Number(driver.currentLongitude) : null,
+    isVip: driver.isVip,
   });
 });
 
@@ -92,6 +103,40 @@ driverRouter.post("/trips/:id/decline", requireAuth("DRIVER"), async (req: Authe
   res.json({ ok: true });
 });
 
+// Cancellation penalty (point 3): a driver cancelling after having already
+// accepted the trip is charged a penalty (deducted from wallet if they have
+// balance, otherwise recorded as owed — kept simple as a straight deduction
+// clamped at 0). No compensation flows to the driver in this case, unlike a
+// passenger cancellation (see passenger.ts).
+driverRouter.post("/trips/:id/cancel", requireAuth("DRIVER"), async (req: AuthedRequest, res) => {
+  const driver = await getDriverOrFail(req, res);
+  if (!driver) return;
+  const trip = await prisma.trip.findUnique({ where: { id: req.params.id } });
+  if (!trip) return res.status(404).json({ error: "Viaje no encontrado" });
+  if (trip.driverId !== driver.id) return res.status(403).json({ error: "No autorizado" });
+  if (trip.status === "COMPLETED" || trip.status === "CANCELLED") {
+    return res.status(409).json({ error: "El viaje ya finalizó" });
+  }
+
+  const config = await getPlatformConfig();
+  const cancellationFeeClp = config.cancellationFeeDriverClp;
+
+  const updated = await prisma.trip.update({
+    where: { id: trip.id },
+    data: { status: "CANCELLED", cancelledAt: new Date(), cancelledBy: "DRIVER", cancellationFeeClp },
+  });
+  await prisma.driver.update({
+    where: { id: driver.id },
+    data: {
+      operationalStatus: "AVAILABLE",
+      walletBalanceClp: { decrement: Math.min(cancellationFeeClp, driver.walletBalanceClp) },
+    },
+  });
+
+  getIo().to(`trip_${trip.id}`).emit("trip:status", { tripId: trip.id, status: "CANCELLED", cancellationFeeClp });
+  res.json({ tripId: updated.id, status: updated.status, cancellationFeeClp });
+});
+
 driverRouter.post("/trips/:id/verify-pin", requireAuth("DRIVER"), async (req: AuthedRequest, res) => {
   const { pinEntered } = req.body as { pinEntered: string };
   const trip = await prisma.trip.findUnique({ where: { id: req.params.id } });
@@ -126,7 +171,15 @@ driverRouter.post("/trips/:id/complete", requireAuth("DRIVER"), async (req: Auth
     },
   });
   getIo().to(`trip_${trip.id}`).emit("trip:status", { tripId: trip.id, status: "COMPLETED" });
-  res.json({ tripId: updated.id, status: updated.status, driverNetClp: trip.driverNetClp });
+
+  const weeklyBonusGrantedClp = await checkAndGrantWeeklyBonus(trip.driverId);
+
+  res.json({
+    tripId: updated.id,
+    status: updated.status,
+    driverNetClp: trip.driverNetClp,
+    weeklyBonusGrantedClp,
+  });
 });
 
 driverRouter.get("/trips/active", requireAuth("DRIVER"), async (req: AuthedRequest, res) => {
@@ -150,16 +203,58 @@ driverRouter.get("/trips/history", requireAuth("DRIVER"), async (req: AuthedRequ
   res.json({ trips });
 });
 
+// Wallet earnings breakdown (point 2, "fuentes de ingreso adicionales del
+// conductor"): the fare-split base is separated from surge/dynamic-pricing
+// income, weekly goal bonuses and passenger tips so each stream is clearly
+// attributed rather than folded into one flat balance number.
 driverRouter.get("/wallet", requireAuth("DRIVER"), async (req: AuthedRequest, res) => {
   const driver = await getDriverOrFail(req, res);
   if (!driver) return;
-  const payouts = await prisma.payout.findMany({
-    where: { driverId: driver.id },
-    orderBy: { executedAt: "desc" },
-    take: 20,
+
+  const [payouts, completedTrips, cancelledTrips, bonuses, ratings] = await Promise.all([
+    prisma.payout.findMany({ where: { driverId: driver.id }, orderBy: { executedAt: "desc" }, take: 20 }),
+    prisma.trip.findMany({
+      where: { driverId: driver.id, status: "COMPLETED" },
+      select: { driverNetClp: true, dynamicMultiplier: true },
+    }),
+    prisma.trip.findMany({
+      where: { driverId: driver.id, status: "CANCELLED", cancellationFeeClp: { gt: 0 } },
+      select: { cancelledBy: true, cancellationFeeClp: true },
+    }),
+    prisma.driverWeeklyBonus.findMany({ where: { driverId: driver.id }, orderBy: { weekStart: "desc" }, take: 12 }),
+    prisma.rating.findMany({ where: { toUserId: driver.userId }, select: { tipClp: true } }),
+  ]);
+
+  const fareBaseClp = completedTrips.reduce((acc, t) => acc + t.driverNetClp, 0);
+  const surgeBonusClp = completedTrips.reduce((acc, t) => {
+    const mult = Number(t.dynamicMultiplier);
+    if (mult <= 1) return acc;
+    return acc + Math.round(t.driverNetClp - t.driverNetClp / mult);
+  }, 0);
+  const tipsClp = ratings.reduce((acc, r) => acc + r.tipClp, 0);
+  const weeklyBonusClp = bonuses.reduce((acc, b) => acc + b.bonusClp, 0);
+  const cancellationCompensationClp = cancelledTrips
+    .filter((t) => t.cancelledBy === "PASSENGER")
+    .reduce((acc, t) => acc + t.cancellationFeeClp, 0);
+  const cancellationPenaltiesClp = cancelledTrips
+    .filter((t) => t.cancelledBy === "DRIVER")
+    .reduce((acc, t) => acc + t.cancellationFeeClp, 0);
+
+  res.json({
+    walletBalanceClp: driver.walletBalanceClp,
+    payouts,
+    completedTrips: completedTrips.length,
+    isVip: driver.isVip,
+    earningsBreakdown: {
+      fareBaseClp: fareBaseClp - surgeBonusClp,
+      surgeBonusClp,
+      tipsClp,
+      weeklyBonusClp,
+      cancellationCompensationClp,
+      cancellationPenaltiesClp,
+    },
+    weeklyBonuses: bonuses,
   });
-  const trips = await prisma.trip.count({ where: { driverId: driver.id, status: "COMPLETED" } });
-  res.json({ walletBalanceClp: driver.walletBalanceClp, payouts, completedTrips: trips });
 });
 
 driverRouter.post("/wallet/payout-request", requireAuth("DRIVER"), async (req: AuthedRequest, res) => {

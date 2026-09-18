@@ -92,9 +92,22 @@ export function computeFare(input: FareInput): FareResult {
   };
 }
 
-// 85% driver / 15% platform commission split (comisión administración comarcal)
-export function splitFare(totalFareClp: number) {
-  const driverNetClp = Math.round(totalFareClp * 0.85);
+// Driver/platform split — configurable by the admin (PlatformConfig.commissionPct,
+// see src/lib/platformConfig.ts) but always bounded to a 70%-85% driver net /
+// 15%-30% platform commission range, per the business model spec. Historically
+// this was a hardcoded 85/15 split; DEFAULT_DRIVER_NET_PCT keeps that as the
+// starting default for anything that doesn't pass an explicit percentage.
+export const DRIVER_NET_PCT_MIN = 0.7;
+export const DRIVER_NET_PCT_MAX = 0.85;
+export const DEFAULT_DRIVER_NET_PCT = 0.85;
+
+export function clampDriverNetPct(pct: number): number {
+  return Math.min(DRIVER_NET_PCT_MAX, Math.max(DRIVER_NET_PCT_MIN, pct));
+}
+
+export function splitFare(totalFareClp: number, driverNetPct: number = DEFAULT_DRIVER_NET_PCT) {
+  const clamped = clampDriverNetPct(driverNetPct);
+  const driverNetClp = Math.round(totalFareClp * clamped);
   const platformFeeClp = totalFareClp - driverNetClp;
   return { driverNetClp, platformFeeClp };
 }
