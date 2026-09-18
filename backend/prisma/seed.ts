@@ -17,11 +17,58 @@ async function main() {
 
   await prisma.rating.deleteMany();
   await prisma.payout.deleteMany();
+  await prisma.driverWeeklyBonus.deleteMany();
   await prisma.trip.deleteMany();
   await prisma.driver.deleteMany();
   await prisma.user.deleteMany();
   await prisma.geofenceZone.deleteMany();
   await prisma.fuelBenchmark.deleteMany();
+  await prisma.adCampaign.deleteMany();
+  await prisma.platformConfig.deleteMany();
+
+  // ---- Platform business/commission config (point 3) ----
+  // Starting default: 15% commission / 85% driver net — the top of the
+  // driver-friendly end of the allowed 70%-85% net range.
+  await prisma.platformConfig.create({
+    data: {
+      commissionPct: 15.0,
+      cancellationFeePassengerClp: 2000,
+      cancellationFeeDriverClp: 3000,
+      weeklyBonusTripThreshold: 20,
+      weeklyBonusAmountClp: 15000,
+      vipMonthlyFeeClp: 12000,
+    },
+  });
+
+  // ---- Ad campaigns (in-app advertising, point 3) ----
+  await prisma.adCampaign.createMany({
+    data: [
+      {
+        title: "Copec Las Cabras Centro",
+        bodyText: "10% de descuento en lavado de auto mostrando tu viaje CabrasGo completado.",
+        targetAudience: "PASAJERO",
+        active: true,
+      },
+      {
+        title: "Feria Costumbrista de Peumo",
+        bodyText: "Este fin de semana en la Plaza de Peumo — viaja seguro con CabrasGo.",
+        targetAudience: "PASAJERO",
+        active: true,
+      },
+      {
+        title: "Seguro SOAP El Manzano",
+        bodyText: "Renueva tu SOAP con 15% de descuento para conductores CabrasGo verificados.",
+        targetAudience: "CONDUCTOR",
+        active: true,
+      },
+      {
+        title: "Promoción fin de temporada",
+        bodyText: "Campaña de verano ya finalizada.",
+        targetAudience: "AMBOS",
+        active: false,
+      },
+    ],
+  });
 
   // ---- Geofence zones (4 comunales, per manual técnico + spec unificada) ----
   await prisma.geofenceZone.createMany({
@@ -265,12 +312,85 @@ async function main() {
         speedKmh: 0,
         batteryPct: 70 + Math.floor(Math.random() * 30),
         lastPingAt: new Date(),
+        // VIP/priority subscription (point 3): the top-rated, longest-serving
+        // driver (Pedro Álvarez) is seeded as the demo's one VIP subscriber.
+        isVip: d.plate === "LKPX84",
+        vipSince: d.plate === "LKPX84" ? new Date() : null,
       },
     });
     drivers.push({ user, driver });
   }
 
-  console.log(`Seeded: 1 admin, ${passengers.length} passengers, ${drivers.length} drivers, 4 geofences, 3 fuel benchmarks.`);
+  // ---- Weekly goal bonus (point 2): one driver already hit this week's
+  // threshold, so the admin bonus payouts list has a real row to show. ----
+  const bonusDriver = drivers[1]; // Ximena Contreras
+  const weekStart = (() => {
+    const d = new Date();
+    const day = d.getDay();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day));
+    return d;
+  })();
+  await prisma.driverWeeklyBonus.create({
+    data: {
+      driverId: bonusDriver.driver.id,
+      weekStart,
+      tripsCompleted: 22,
+      bonusClp: 15000,
+    },
+  });
+  await prisma.driver.update({
+    where: { id: bonusDriver.driver.id },
+    data: { walletBalanceClp: { increment: 15000 } },
+  });
+
+  // ---- Cancelled trip with a cancellation fee (point 3) ----
+  // Passenger cancelled after the driver had already accepted (ACCEPTED ->
+  // CANCELLED), so the $2.000 passenger cancellation fee applies and is
+  // reflected in admin revenue.
+  const cancelPassenger = passengers[2];
+  const cancelDriver = drivers[3]; // Daniela Vásquez, STANDARD_SEDAN
+  await prisma.trip.create({
+    data: {
+      passengerId: cancelPassenger.id,
+      driverId: cancelDriver.driver.id,
+      status: "CANCELLED",
+      category: "STANDARD_SEDAN",
+      pinVerification: String(Math.floor(1000 + Math.random() * 9000)),
+      originAddress: "Plaza de Armas de Las Cabras",
+      originLat: -34.2917,
+      originLng: -71.3092,
+      destAddress: "Hospital de Las Cabras",
+      destLat: -34.2944,
+      destLng: -71.3129,
+      distanceKmTotal: 1.9,
+      distanceKmPaved: 1.75,
+      distanceKmDirt: 0.15,
+      geofenceZoneCode: "LAS_CABRAS_CENTRO",
+      dynamicMultiplier: 1.0,
+      fuelFactor: 1.0,
+      fareGrossClp: 2450,
+      driverNetClp: 2083,
+      platformFeeClp: 367,
+      paymentMethod: "CASH",
+      paymentStatus: "PENDING",
+      requestedAt: new Date(Date.now() - 30 * 60 * 1000),
+      acceptedAt: new Date(Date.now() - 28 * 60 * 1000),
+      cancelledAt: new Date(Date.now() - 25 * 60 * 1000),
+      cancelledBy: "PASSENGER",
+      cancellationFeeClp: 2000,
+    },
+  });
+  await prisma.driver.update({
+    where: { id: cancelDriver.driver.id },
+    // Driver is compensated 85% of the cancellation fee, same commission split.
+    data: { walletBalanceClp: { increment: 1700 } },
+  });
+
+  console.log(
+    `Seeded: 1 admin, ${passengers.length} passengers, ${drivers.length} drivers, 4 geofences, 3 fuel benchmarks, ` +
+      `1 platform config (15% comisión), 4 ad campaigns, 1 driver VIP, 1 weekly bonus, 1 cancelled trip with fee.`
+  );
   console.log("Demo login password for all seeded users: cabrasgo2025");
 }
 

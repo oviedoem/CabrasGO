@@ -27,6 +27,7 @@ interface RadarDriver {
   batteryPct: number | null;
   rating: number;
   isKycVerified: boolean;
+  isVip: boolean;
 }
 
 interface GeofenceZone {
@@ -50,6 +51,41 @@ interface FuelBenchmark {
   reportedAt: string;
 }
 
+interface PlatformConfigData {
+  id: string;
+  commissionPct: string | number;
+  cancellationFeePassengerClp: number;
+  cancellationFeeDriverClp: number;
+  weeklyBonusTripThreshold: number;
+  weeklyBonusAmountClp: number;
+  vipMonthlyFeeClp: number;
+}
+
+interface BusinessOverview {
+  commission: { commissionPct: number; driverNetPct: number; minPct: number; maxPct: number; revenueClp: number; gmvClp: number };
+  cancellations: { feePassengerClp: number; feeDriverClp: number; revenueClp: number; chargedCount: number; byParty: { passenger: number; driver: number } };
+  vip: { monthlyFeeClp: number; vipDriverCount: number; projectedMonthlyRevenueClp: number };
+  weeklyBonus: { tripThreshold: number; amountClp: number; totalPaidClp: number; grantCount: number };
+  ads: { totalCount: number; activeCount: number };
+}
+
+interface AdCampaign {
+  id: string;
+  title: string;
+  bodyText: string;
+  imageUrl: string | null;
+  targetAudience: "PASAJERO" | "CONDUCTOR" | "AMBOS";
+  active: boolean;
+}
+
+interface WeeklyBonusRow {
+  id: string;
+  driverName: string;
+  weekStart: string;
+  tripsCompleted: number;
+  bonusClp: number;
+}
+
 const STATUS_LABEL: Record<string, string> = {
   OFFLINE: "Desconectado",
   AVAILABLE: "Libre",
@@ -61,12 +97,16 @@ const STATUS_LABEL: Record<string, string> = {
 export function AdminApp() {
   const navigate = useNavigate();
   const user = getUser();
-  const [tab, setTab] = useState<"kpis" | "flota" | "geocercas" | "combustible" | "usuarios">("kpis");
+  const [tab, setTab] = useState<"kpis" | "flota" | "geocercas" | "combustible" | "usuarios" | "negocio">("kpis");
   const [kpis, setKpis] = useState<Kpis | null>(null);
   const [drivers, setDrivers] = useState<RadarDriver[]>([]);
   const [zones, setZones] = useState<GeofenceZone[]>([]);
   const [fuel, setFuel] = useState<FuelBenchmark[]>([]);
   const [users, setUsers] = useState<any[]>([]);
+  const [config, setConfig] = useState<PlatformConfigData | null>(null);
+  const [overview, setOverview] = useState<BusinessOverview | null>(null);
+  const [ads, setAds] = useState<AdCampaign[]>([]);
+  const [bonuses, setBonuses] = useState<WeeklyBonusRow[]>([]);
 
   useEffect(() => {
     if (!user || (user.role !== "ADMIN" && user.role !== "DISPATCHER")) {
@@ -84,6 +124,10 @@ export function AdminApp() {
     api.get<{ zones: GeofenceZone[] }>("/admin/geofences").then((d) => setZones(d.zones)).catch(() => {});
     api.get<{ benchmarks: FuelBenchmark[] }>("/admin/fuel/benchmarks").then((d) => setFuel(d.benchmarks)).catch(() => {});
     api.get<{ users: any[] }>("/admin/users").then((d) => setUsers(d.users)).catch(() => {});
+    api.get<{ config: PlatformConfigData }>("/admin/config").then((d) => setConfig(d.config)).catch(() => {});
+    api.get<BusinessOverview>("/admin/business/overview").then(setOverview).catch(() => {});
+    api.get<{ ads: AdCampaign[] }>("/admin/ads").then((d) => setAds(d.ads)).catch(() => {});
+    api.get<{ bonuses: WeeklyBonusRow[] }>("/admin/bonuses/weekly").then((d) => setBonuses(d.bonuses)).catch(() => {});
   }
 
   async function updateZone(code: string, patch: Partial<GeofenceZone>) {
@@ -93,6 +137,31 @@ export function AdminApp() {
 
   async function syncFuel() {
     await api.post("/admin/fuel/sync-cne");
+    refreshAll();
+  }
+
+  async function updateConfig(patch: Partial<PlatformConfigData>) {
+    await api.put("/admin/config", patch);
+    refreshAll();
+  }
+
+  async function toggleVip(driverId: string, isVip: boolean) {
+    await api.put(`/admin/drivers/${driverId}/vip`, { isVip });
+    refreshAll();
+  }
+
+  async function createAd(ad: { title: string; bodyText: string; targetAudience: string }) {
+    await api.post("/admin/ads", ad);
+    refreshAll();
+  }
+
+  async function toggleAd(id: string, active: boolean) {
+    await api.put(`/admin/ads/${id}`, { active });
+    refreshAll();
+  }
+
+  async function deleteAd(id: string) {
+    await api.del(`/admin/ads/${id}`);
     refreshAll();
   }
 
@@ -126,6 +195,7 @@ export function AdminApp() {
           ["geocercas", "Geocercas"],
           ["combustible", "Combustibles"],
           ["usuarios", "Usuarios & KYC"],
+          ["negocio", "Modelo de Negocio"],
         ] as const).map(([key, label]) => (
           <button
             key={key}
@@ -141,10 +211,24 @@ export function AdminApp() {
 
       <main className="p-6 max-w-6xl mx-auto">
         {tab === "kpis" && kpis && <KpiTab kpis={kpis} />}
-        {tab === "flota" && <FleetTab drivers={drivers} />}
+        {tab === "flota" && <FleetTab drivers={drivers} onToggleVip={toggleVip} />}
         {tab === "geocercas" && <GeofenceTab zones={zones} onUpdate={updateZone} />}
         {tab === "combustible" && <FuelTab fuel={fuel} onSync={syncFuel} />}
         {tab === "usuarios" && <UsersTab users={users} />}
+        {tab === "negocio" && config && overview && (
+          <NegocioTab
+            config={config}
+            overview={overview}
+            ads={ads}
+            bonuses={bonuses}
+            drivers={drivers}
+            onUpdateConfig={updateConfig}
+            onToggleVip={toggleVip}
+            onCreateAd={createAd}
+            onToggleAd={toggleAd}
+            onDeleteAd={deleteAd}
+          />
+        )}
       </main>
     </div>
   );
@@ -183,7 +267,13 @@ function KpiTab({ kpis }: { kpis: Kpis }) {
   );
 }
 
-function FleetTab({ drivers }: { drivers: RadarDriver[] }) {
+function FleetTab({
+  drivers,
+  onToggleVip,
+}: {
+  drivers: RadarDriver[];
+  onToggleVip: (driverId: string, isVip: boolean) => void;
+}) {
   return (
     <div>
       <div className="mb-4">
@@ -214,12 +304,16 @@ function FleetTab({ drivers }: { drivers: RadarDriver[] }) {
             <th className="text-left px-4 py-3">Vel.</th>
             <th className="text-left px-4 py-3">Batería</th>
             <th className="text-left px-4 py-3">KYC</th>
+            <th className="text-left px-4 py-3">VIP</th>
           </tr>
         </thead>
         <tbody>
           {drivers.map((d) => (
             <tr key={d.id} className="border-t border-slate-100">
-              <td className="px-4 py-3 font-medium">{d.name} <span className="text-xs text-slate-400">⭐{d.rating.toFixed(1)}</span></td>
+              <td className="px-4 py-3 font-medium">
+                {d.name} <span className="text-xs text-slate-400">⭐{d.rating.toFixed(1)}</span>
+                {d.isVip && <span className="ml-1 text-[10px] font-bold bg-amber-400 text-black rounded-full px-2 py-0.5">VIP</span>}
+              </td>
               <td className="px-4 py-3">{d.model} · {formatPatente(d.plate)}</td>
               <td className="px-4 py-3">
                 <span className="rounded-full bg-emerald-50 text-cg-earnings px-2 py-1 text-xs font-semibold">
@@ -230,6 +324,16 @@ function FleetTab({ drivers }: { drivers: RadarDriver[] }) {
               <td className="px-4 py-3">{Math.round(d.speedKmh)} km/h</td>
               <td className="px-4 py-3">{d.batteryPct}%</td>
               <td className="px-4 py-3">{d.isKycVerified ? "✅" : "⏳"}</td>
+              <td className="px-4 py-3">
+                <button
+                  onClick={() => onToggleVip(d.id, !d.isVip)}
+                  className={`text-xs font-semibold rounded-full px-3 py-1 ${
+                    d.isVip ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-500"
+                  }`}
+                >
+                  {d.isVip ? "Quitar VIP" : "Hacer VIP"}
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -339,6 +443,265 @@ function FuelTab({ fuel, onSync }: { fuel: FuelBenchmark[]; onSync: () => void }
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function NegocioTab({
+  config,
+  overview,
+  ads,
+  bonuses,
+  drivers,
+  onUpdateConfig,
+  onToggleVip,
+  onCreateAd,
+  onToggleAd,
+  onDeleteAd,
+}: {
+  config: PlatformConfigData;
+  overview: BusinessOverview;
+  ads: AdCampaign[];
+  bonuses: WeeklyBonusRow[];
+  drivers: RadarDriver[];
+  onUpdateConfig: (patch: Partial<PlatformConfigData>) => void;
+  onToggleVip: (driverId: string, isVip: boolean) => void;
+  onCreateAd: (ad: { title: string; bodyText: string; targetAudience: string }) => void;
+  onToggleAd: (id: string, active: boolean) => void;
+  onDeleteAd: (id: string) => void;
+}) {
+  const [newAdTitle, setNewAdTitle] = useState("");
+  const [newAdBody, setNewAdBody] = useState("");
+  const [newAdAudience, setNewAdAudience] = useState("AMBOS");
+
+  const vipDrivers = drivers.filter((d) => d.isVip);
+
+  return (
+    <div className="space-y-8">
+      {/* Revenue overview */}
+      <div>
+        <p className="text-sm font-semibold text-slate-600 mb-2">Fuentes de ingreso de la plataforma</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-cg-surface rounded-2xl p-4 shadow-sm">
+            <p className="text-xs text-slate-400 uppercase tracking-wide mb-1">Comisión ({overview.commission.commissionPct}%)</p>
+            <p className="text-xl font-bold">{formatClp(overview.commission.revenueClp)}</p>
+            <p className="text-xs text-slate-400 mt-1">GMV {formatClp(overview.commission.gmvClp)}</p>
+          </div>
+          <div className="bg-cg-surface rounded-2xl p-4 shadow-sm">
+            <p className="text-xs text-slate-400 uppercase tracking-wide mb-1">Penalidades de cancelación</p>
+            <p className="text-xl font-bold">{formatClp(overview.cancellations.revenueClp)}</p>
+            <p className="text-xs text-slate-400 mt-1">{overview.cancellations.chargedCount} viajes cobrados</p>
+          </div>
+          <div className="bg-cg-surface rounded-2xl p-4 shadow-sm">
+            <p className="text-xs text-slate-400 uppercase tracking-wide mb-1">Suscripciones VIP (proyectado/mes)</p>
+            <p className="text-xl font-bold">{formatClp(overview.vip.projectedMonthlyRevenueClp)}</p>
+            <p className="text-xs text-slate-400 mt-1">{overview.vip.vipDriverCount} conductores VIP</p>
+          </div>
+          <div className="bg-cg-surface rounded-2xl p-4 shadow-sm">
+            <p className="text-xs text-slate-400 uppercase tracking-wide mb-1">Bonos pagados (meta semanal)</p>
+            <p className="text-xl font-bold">{formatClp(overview.weeklyBonus.totalPaidClp)}</p>
+            <p className="text-xs text-slate-400 mt-1">{overview.weeklyBonus.grantCount} bonos otorgados</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Commission + cancellation + bonus + VIP config */}
+      <div>
+        <p className="text-sm font-semibold text-slate-600 mb-2">Configuración de comisión y penalidades</p>
+        <div className="bg-cg-surface rounded-2xl p-4 shadow-sm grid md:grid-cols-2 gap-4">
+          <ConfigField
+            label={`Comisión plataforma (%) — rango ${overview.commission.minPct}-${overview.commission.maxPct}`}
+            defaultValue={Number(config.commissionPct)}
+            onBlur={(v) => onUpdateConfig({ commissionPct: v })}
+          />
+          <p className="text-xs text-slate-400 self-center">
+            Conductor neto actual: <b>{100 - Number(config.commissionPct)}%</b> por viaje
+          </p>
+          <ConfigField
+            label="Penalidad cancelación pasajero (CLP)"
+            defaultValue={config.cancellationFeePassengerClp}
+            onBlur={(v) => onUpdateConfig({ cancellationFeePassengerClp: v })}
+          />
+          <ConfigField
+            label="Penalidad cancelación conductor (CLP)"
+            defaultValue={config.cancellationFeeDriverClp}
+            onBlur={(v) => onUpdateConfig({ cancellationFeeDriverClp: v })}
+          />
+          <ConfigField
+            label="Meta semanal (N° viajes)"
+            defaultValue={config.weeklyBonusTripThreshold}
+            onBlur={(v) => onUpdateConfig({ weeklyBonusTripThreshold: v })}
+          />
+          <ConfigField
+            label="Bono por meta semanal (CLP)"
+            defaultValue={config.weeklyBonusAmountClp}
+            onBlur={(v) => onUpdateConfig({ weeklyBonusAmountClp: v })}
+          />
+          <ConfigField
+            label="Cuota mensual VIP (CLP)"
+            defaultValue={config.vipMonthlyFeeClp}
+            onBlur={(v) => onUpdateConfig({ vipMonthlyFeeClp: v })}
+          />
+        </div>
+      </div>
+
+      {/* VIP drivers */}
+      <div>
+        <p className="text-sm font-semibold text-slate-600 mb-2">Conductores VIP ({vipDrivers.length})</p>
+        <div className="bg-cg-surface rounded-2xl shadow-sm overflow-hidden">
+          {vipDrivers.length === 0 ? (
+            <p className="text-sm text-slate-400 p-4">Ningún conductor VIP todavía.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <tbody>
+                {vipDrivers.map((d) => (
+                  <tr key={d.id} className="border-t border-slate-100">
+                    <td className="px-4 py-3 font-medium">{d.name}</td>
+                    <td className="px-4 py-3 text-xs text-slate-400">{formatPatente(d.plate)}</td>
+                    <td className="px-4 py-3 text-right">
+                      <button onClick={() => onToggleVip(d.id, false)} className="text-xs text-cg-danger font-semibold">
+                        Quitar VIP
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
+      {/* Weekly bonuses */}
+      <div>
+        <p className="text-sm font-semibold text-slate-600 mb-2">Bonos por meta semanal otorgados</p>
+        <div className="bg-cg-surface rounded-2xl shadow-sm overflow-hidden">
+          {bonuses.length === 0 ? (
+            <p className="text-sm text-slate-400 p-4">Sin bonos otorgados aún.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-cg-surfaceAlt text-slate-500">
+                <tr>
+                  <th className="text-left px-4 py-3">Conductor</th>
+                  <th className="text-left px-4 py-3">Semana</th>
+                  <th className="text-left px-4 py-3">Viajes</th>
+                  <th className="text-left px-4 py-3">Bono</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bonuses.map((b) => (
+                  <tr key={b.id} className="border-t border-slate-100">
+                    <td className="px-4 py-3 font-medium">{b.driverName}</td>
+                    <td className="px-4 py-3 text-xs text-slate-500">{new Date(b.weekStart).toLocaleDateString("es-CL")}</td>
+                    <td className="px-4 py-3">{b.tripsCompleted}</td>
+                    <td className="px-4 py-3 font-semibold">{formatClp(b.bonusClp)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
+      {/* Ad campaigns */}
+      <div>
+        <p className="text-sm font-semibold text-slate-600 mb-2">
+          Campañas publicitarias in-app ({overview.ads.activeCount} activas / {overview.ads.totalCount})
+        </p>
+        <div className="bg-cg-surface rounded-2xl p-4 shadow-sm mb-3 grid md:grid-cols-4 gap-2">
+          <input
+            value={newAdTitle}
+            onChange={(e) => setNewAdTitle(e.target.value)}
+            placeholder="Título"
+            className="border border-slate-200 rounded-lg px-2 py-2 text-sm md:col-span-1"
+          />
+          <input
+            value={newAdBody}
+            onChange={(e) => setNewAdBody(e.target.value)}
+            placeholder="Texto del anuncio"
+            className="border border-slate-200 rounded-lg px-2 py-2 text-sm md:col-span-2"
+          />
+          <select
+            value={newAdAudience}
+            onChange={(e) => setNewAdAudience(e.target.value)}
+            className="border border-slate-200 rounded-lg px-2 py-2 text-sm"
+          >
+            <option value="AMBOS">Ambos</option>
+            <option value="PASAJERO">Pasajero</option>
+            <option value="CONDUCTOR">Conductor</option>
+          </select>
+          <button
+            onClick={() => {
+              if (!newAdTitle || !newAdBody) return;
+              onCreateAd({ title: newAdTitle, bodyText: newAdBody, targetAudience: newAdAudience });
+              setNewAdTitle("");
+              setNewAdBody("");
+            }}
+            className="md:col-span-4 bg-cg-accent text-white font-semibold rounded-xl py-2 text-sm"
+          >
+            Crear campaña
+          </button>
+        </div>
+        <div className="bg-cg-surface rounded-2xl shadow-sm overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-cg-surfaceAlt text-slate-500">
+              <tr>
+                <th className="text-left px-4 py-3">Campaña</th>
+                <th className="text-left px-4 py-3">Audiencia</th>
+                <th className="text-left px-4 py-3">Estado</th>
+                <th className="text-left px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {ads.map((ad) => (
+                <tr key={ad.id} className="border-t border-slate-100">
+                  <td className="px-4 py-3">
+                    <p className="font-medium">{ad.title}</p>
+                    <p className="text-xs text-slate-400">{ad.bodyText}</p>
+                  </td>
+                  <td className="px-4 py-3">{ad.targetAudience}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => onToggleAd(ad.id, !ad.active)}
+                      className={`text-xs font-semibold rounded-full px-3 py-1 ${
+                        ad.active ? "bg-emerald-50 text-cg-earnings" : "bg-slate-100 text-slate-500"
+                      }`}
+                    >
+                      {ad.active ? "Activa" : "Inactiva"}
+                    </button>
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <button onClick={() => onDeleteAd(ad.id)} className="text-xs text-cg-danger font-semibold">
+                      Eliminar
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfigField({
+  label,
+  defaultValue,
+  onBlur,
+}: {
+  label: string;
+  defaultValue: number;
+  onBlur: (v: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <label className="text-sm text-slate-500 flex-1">{label}</label>
+      <input
+        type="number"
+        defaultValue={defaultValue}
+        onBlur={(e) => onBlur(Number(e.target.value))}
+        className="border border-slate-200 rounded-lg px-2 py-1 w-28 text-sm"
+      />
     </div>
   );
 }

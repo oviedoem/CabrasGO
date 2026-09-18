@@ -93,8 +93,15 @@ model Driver {
   speedKmh         Decimal?
   batteryPct       Int?      @default(100)
 
-  trips   Trip[]   @relation("DriverTrips")
-  payouts Payout[]
+  // VIP/priority subscription (point 3 of the business model): a VIP driver
+  // pays PlatformConfig.vipMonthlyFeeClp and is dispatched first among peers
+  // in the same proximity tier (see dispatchTrip in src/routes/passenger.ts).
+  isVip   Boolean   @default(false)
+  vipSince DateTime?
+
+  trips         Trip[]              @relation("DriverTrips")
+  payouts       Payout[]
+  weeklyBonuses DriverWeeklyBonus[]
 }
 
 model GeofenceZone {
@@ -171,6 +178,12 @@ model Trip {
   completedAt DateTime?
   cancelledAt DateTime?
 
+  // Cancellation penalty (point 3, "tarifas/penalidades de cancelación"):
+  // set when a trip is cancelled after a driver has already accepted it.
+  /// PASSENGER | DRIVER
+  cancelledBy        String?
+  cancellationFeeClp Int     @default(0)
+
   rating Rating?
 }
 
@@ -198,4 +211,62 @@ model Payout {
   tefRefCode String
   status     String   @default("PROCESSED")
   executedAt DateTime @default(now())
+}
+
+// ---- Business/commission model (point 3: Administrador / Dueño de la Plataforma) ----
+
+// Single-row platform-wide settings, editable from the admin panel. Read via
+// src/lib/platformConfig.ts, which lazily creates the default row on first
+// read so no manual setup step is required.
+model PlatformConfig {
+  id String @id @default(uuid())
+
+  // Commission taken by the platform on each completed trip, constrained to
+  // 15-30% (i.e. driver net constrained to 70-85%) — see
+  // src/lib/fare.ts splitFare() and DRIVER_NET_PCT_MIN/MAX.
+  commissionPct Decimal @default(15.0)
+
+  // Cancellation penalties (CLP), charged to whichever party is responsible
+  // once a driver has already accepted the trip.
+  cancellationFeePassengerClp Int @default(2000)
+  cancellationFeeDriverClp    Int @default(3000)
+
+  // Weekly goal bonus: a driver who completes >= this many trips within a
+  // rolling week earns this bonus once per week (see DriverWeeklyBonus).
+  weeklyBonusTripThreshold Int @default(20)
+  weeklyBonusAmountClp     Int @default(15000)
+
+  // VIP/priority driver subscription monthly fee.
+  vipMonthlyFeeClp Int @default(12000)
+
+  updatedAt DateTime @updatedAt
+}
+
+// One record per driver per rolling week in which they hit the weekly trip
+// goal — granted automatically in src/routes/driver.ts when a trip completes.
+model DriverWeeklyBonus {
+  id             String   @id @default(uuid())
+  driverId       String
+  driver         Driver   @relation(fields: [driverId], references: [id])
+  weekStart      DateTime
+  tripsCompleted Int
+  bonusClp       Int
+  createdAt      DateTime @default(now())
+
+  @@unique([driverId, weekStart])
+}
+
+// In-app advertising / promo banner slots, admin-managed, rendered by the
+// pasajero and/or conductor frontend apps.
+model AdCampaign {
+  id       String  @id @default(uuid())
+  title    String
+  bodyText String
+  imageUrl String?
+  /// PASAJERO | CONDUCTOR | AMBOS
+  targetAudience String  @default("AMBOS")
+  active         Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

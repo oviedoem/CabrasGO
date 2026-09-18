@@ -6,8 +6,24 @@ import { splitFare, CATEGORY_MULTIPLIER, computeFare } from "../lib/fare";
 import { haversineKm } from "../lib/geofence";
 import { getIo } from "../ws/socket";
 import { LANDMARKS, QUICK_ACCESS_CODES } from "../lib/landmarks";
+import { driverNetPctFromConfig, getPlatformConfig } from "../lib/platformConfig";
 
 export const passengerRouter = Router();
+
+// Public-safe slice of PlatformConfig so the passenger app can warn about
+// the cancellation fee before the passenger confirms cancelling.
+passengerRouter.get("/cancellation-policy", async (_req, res) => {
+  const config = await getPlatformConfig();
+  res.json({ cancellationFeePassengerClp: config.cancellationFeePassengerClp });
+});
+
+passengerRouter.get("/ads", async (req, res) => {
+  const ads = await prisma.adCampaign.findMany({
+    where: { active: true, OR: [{ targetAudience: "PASAJERO" }, { targetAudience: "AMBOS" }] },
+    orderBy: { createdAt: "desc" },
+  });
+  res.json({ ads });
+});
 
 passengerRouter.get("/landmarks", (_req, res) => {
   res.json({
@@ -55,7 +71,8 @@ passengerRouter.post("/trips/request", requireAuth("PASSENGER"), async (req: Aut
   });
   const catMultiplier = CATEGORY_MULTIPLIER[category] ?? 1.0;
   const fareGrossClp = Math.round(fare.totalFareClp * catMultiplier);
-  const { driverNetClp, platformFeeClp } = splitFare(fareGrossClp);
+  const driverNetPct = await driverNetPctFromConfig();
+  const { driverNetClp, platformFeeClp } = splitFare(fareGrossClp, driverNetPct);
 
   const pin = String(Math.floor(1000 + Math.random() * 9000));
 
@@ -104,6 +121,12 @@ async function dispatchTrip(tripId: string) {
   });
   if (!candidates.length) return; // no drivers available; stays DISPATCHING
 
+  // Proximity-tier VIP priority (point 3, "suscripciones VIP para conductores"):
+  // drivers are grouped into 3km tiers by pickup distance, and within the
+  // same tier a VIP driver is offered the trip before a non-VIP one — VIP
+  // status only breaks ties within a tier, it never lets a far-away VIP
+  // driver jump ahead of a much closer non-VIP one.
+  const PROXIMITY_TIER_KM = 3;
   const withDistance = candidates
     .map((d) => ({
       driver: d,
@@ -112,7 +135,13 @@ async function dispatchTrip(tripId: string) {
         { lat: Number(d.currentLatitude ?? trip.originLat), lng: Number(d.currentLongitude ?? trip.originLng) }
       ),
     }))
-    .sort((a, b) => a.distanceKm - b.distanceKm);
+    .sort((a, b) => {
+      const tierA = Math.floor(a.distanceKm / PROXIMITY_TIER_KM);
+      const tierB = Math.floor(b.distanceKm / PROXIMITY_TIER_KM);
+      if (tierA !== tierB) return tierA - tierB;
+      if (a.driver.isVip !== b.driver.isVip) return a.driver.isVip ? -1 : 1;
+      return a.distanceKm - b.distanceKm;
+    });
 
   const nearest = withDistance[0];
   const io = getIo();
@@ -173,6 +202,43 @@ passengerRouter.get("/trips/:id/live", requireAuth("PASSENGER"), async (req: Aut
       : null,
     sosPhone: "133",
   });
+});
+
+// Cancellation penalty (point 3): once a driver has accepted, cancelling has
+// a cost. Before acceptance (still DISPATCHING) it's free — no driver has
+// committed time yet.
+const CHARGEABLE_STATUSES = ["ACCEPTED", "DRIVER_ARRIVED", "IN_PROGRESS"];
+
+passengerRouter.post("/trips/:id/cancel", requireAuth("PASSENGER"), async (req: AuthedRequest, res) => {
+  const trip = await prisma.trip.findUnique({ where: { id: req.params.id } });
+  if (!trip) return res.status(404).json({ error: "Viaje no encontrado" });
+  if (trip.passengerId !== req.auth!.userId) return res.status(403).json({ error: "No autorizado" });
+  if (trip.status === "COMPLETED" || trip.status === "CANCELLED") {
+    return res.status(409).json({ error: "El viaje ya finalizó" });
+  }
+
+  const config = await getPlatformConfig();
+  const chargeable = CHARGEABLE_STATUSES.includes(trip.status);
+  const cancellationFeeClp = chargeable ? config.cancellationFeePassengerClp : 0;
+
+  const updated = await prisma.trip.update({
+    where: { id: trip.id },
+    data: { status: "CANCELLED", cancelledAt: new Date(), cancelledBy: "PASSENGER", cancellationFeeClp },
+  });
+
+  // Compensate the driver for the wasted trip (proportional to their normal
+  // commission split) and free them up for new offers.
+  if (trip.driverId && chargeable) {
+    const driverNetPct = await driverNetPctFromConfig();
+    const { driverNetClp: driverCompensationClp } = splitFare(cancellationFeeClp, driverNetPct);
+    await prisma.driver.update({
+      where: { id: trip.driverId },
+      data: { operationalStatus: "AVAILABLE", walletBalanceClp: { increment: driverCompensationClp } },
+    });
+  }
+
+  getIo().to(`trip_${trip.id}`).emit("trip:status", { tripId: trip.id, status: "CANCELLED", cancellationFeeClp });
+  res.json({ tripId: updated.id, status: updated.status, cancellationFeeClp });
 });
 
 passengerRouter.post("/trips/:id/pay", requireAuth("PASSENGER"), async (req: AuthedRequest, res) => {

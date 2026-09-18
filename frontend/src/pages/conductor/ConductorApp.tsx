@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { api, getUser, clearSession } from "../../lib/api";
 import { getSocket } from "../../lib/socket";
 import { formatClp, formatPatente } from "../../lib/format";
+import { AdBanner } from "../../components/AdBanner";
 
 interface DriverProfile {
   id: string;
@@ -15,6 +16,16 @@ interface DriverProfile {
   totalTrips: number;
   lat: number | null;
   lng: number | null;
+  isVip: boolean;
+}
+
+interface EarningsBreakdown {
+  fareBaseClp: number;
+  surgeBonusClp: number;
+  tipsClp: number;
+  weeklyBonusClp: number;
+  cancellationCompensationClp: number;
+  cancellationPenaltiesClp: number;
 }
 
 interface TripOffer {
@@ -39,7 +50,14 @@ export function ConductorApp() {
   const [pinInput, setPinInput] = useState("");
   const [tab, setTab] = useState<"home" | "wallet">("home");
   const [payoutAmount, setPayoutAmount] = useState("");
-  const [wallet, setWallet] = useState<{ walletBalanceClp: number; payouts: any[]; completedTrips: number } | null>(null);
+  const [wallet, setWallet] = useState<{
+    walletBalanceClp: number;
+    payouts: any[];
+    completedTrips: number;
+    earningsBreakdown: EarningsBreakdown;
+    weeklyBonuses: any[];
+  } | null>(null);
+  const [ads, setAds] = useState<{ id: string; title: string; bodyText: string; imageUrl: string | null }[]>([]);
   const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -49,6 +67,7 @@ export function ConductorApp() {
     }
     loadProfile();
     loadActiveTrip();
+    api.get<{ ads: typeof ads }>("/driver/ads").then((d) => setAds(d.ads)).catch(() => {});
     const socket = getSocket();
     if (user.driverId) socket.emit("join:driver", user.driverId);
     socket.on("trip:dispatch:offer", (payload: TripOffer) => {
@@ -138,6 +157,19 @@ export function ConductorApp() {
     }
   }
 
+  async function cancelActiveTrip() {
+    if (!activeTrip) return;
+    if (!window.confirm("Cancelar este viaje aplicará una penalidad de cancelación. ¿Continuar?")) return;
+    try {
+      await api.post(`/driver/trips/${activeTrip.id}/cancel`);
+      setActiveTrip(null);
+      setPinInput("");
+      loadProfile();
+    } catch (e: any) {
+      alert(e.message);
+    }
+  }
+
   async function completeTrip() {
     if (!activeTrip) return;
     await api.post(`/driver/trips/${activeTrip.id}/complete`);
@@ -195,10 +227,16 @@ export function ConductorApp() {
       <main className="max-w-md mx-auto p-4">
         {tab === "home" && (
           <div>
+            <AdBanner ads={ads} dark />
             <div className="bg-cg-darkSurface rounded-2xl p-4 mb-4 flex items-center justify-between">
               <div>
                 <p className="text-xs text-slate-400">{profile.model} · {formatPatente(profile.plate)}</p>
-                <p className="font-semibold">{profile.name}</p>
+                <p className="font-semibold flex items-center gap-2">
+                  {profile.name}
+                  {profile.isVip && (
+                    <span className="text-[10px] font-bold bg-amber-400 text-black rounded-full px-2 py-0.5">VIP</span>
+                  )}
+                </p>
                 <p className="text-xs text-slate-400 mt-1">⭐ {profile.rating.toFixed(1)} · {profile.totalTrips} viajes</p>
               </div>
               <button
@@ -217,7 +255,16 @@ export function ConductorApp() {
               <p className="text-2xl font-bold text-cg-earningsBright">{formatClp(profile.walletBalanceClp)}</p>
             </div>
 
-            {activeTrip && <ActiveTripCard trip={activeTrip} pinInput={pinInput} setPinInput={setPinInput} onVerify={verifyPin} onComplete={completeTrip} />}
+            {activeTrip && (
+              <ActiveTripCard
+                trip={activeTrip}
+                pinInput={pinInput}
+                setPinInput={setPinInput}
+                onVerify={verifyPin}
+                onComplete={completeTrip}
+                onCancel={cancelActiveTrip}
+              />
+            )}
 
             {!activeTrip && !offer && (
               <div className="text-center text-slate-500 text-sm py-10">
@@ -232,8 +279,39 @@ export function ConductorApp() {
             <div className="bg-cg-darkSurface rounded-2xl p-4 mb-4 text-center">
               <p className="text-xs text-slate-400 uppercase">Saldo disponible</p>
               <p className="text-3xl font-bold text-cg-earningsBright">{formatClp(wallet.walletBalanceClp)}</p>
-              <p className="text-xs text-slate-400 mt-1">{wallet.completedTrips} viajes completados · 85% conductor / 15% comisión comunal</p>
+              <p className="text-xs text-slate-400 mt-1">{wallet.completedTrips} viajes completados</p>
             </div>
+
+            <p className="text-sm font-semibold text-slate-400 mb-2">Desglose de ingresos</p>
+            <div className="bg-cg-darkSurface rounded-2xl p-4 mb-4 space-y-2 text-sm">
+              <EarningsRow label="Tarifa base (split conductor)" value={wallet.earningsBreakdown.fareBaseClp} />
+              <EarningsRow label="Tarifa dinámica / surge" value={wallet.earningsBreakdown.surgeBonusClp} />
+              <EarningsRow label="Propinas" value={wallet.earningsBreakdown.tipsClp} />
+              <EarningsRow label="Bono meta semanal" value={wallet.earningsBreakdown.weeklyBonusClp} />
+              <EarningsRow label="Compensación por cancelación" value={wallet.earningsBreakdown.cancellationCompensationClp} />
+              {wallet.earningsBreakdown.cancellationPenaltiesClp > 0 && (
+                <EarningsRow
+                  label="Penalidad por cancelación"
+                  value={-wallet.earningsBreakdown.cancellationPenaltiesClp}
+                  negative
+                />
+              )}
+            </div>
+
+            {wallet.weeklyBonuses.length > 0 && (
+              <>
+                <p className="text-sm font-semibold text-slate-400 mb-2">Bonos por meta semanal</p>
+                <div className="space-y-2 mb-4">
+                  {wallet.weeklyBonuses.map((b: any) => (
+                    <div key={b.id} className="bg-cg-darkSurface rounded-xl p-3 flex justify-between text-sm">
+                      <span>{b.tripsCompleted} viajes · semana {new Date(b.weekStart).toLocaleDateString("es-CL")}</span>
+                      <span className="font-semibold text-cg-earningsBright">{formatClp(b.bonusClp)}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
             <div className="flex gap-2 mb-4">
               <input
                 type="number"
@@ -309,21 +387,24 @@ function ActiveTripCard({
   setPinInput,
   onVerify,
   onComplete,
+  onCancel,
 }: {
   trip: any;
   pinInput: string;
   setPinInput: (v: string) => void;
   onVerify: () => void;
   onComplete: () => void;
+  onCancel: () => void;
 }) {
+  const canCancel = trip.status === "ACCEPTED" || trip.status === "DRIVER_ARRIVED";
   return (
     <div className="bg-cg-darkSurface rounded-2xl p-4 mb-4">
       <p className="text-xs text-slate-400 uppercase tracking-wide mb-1">Viaje activo · {trip.status}</p>
       <p className="font-semibold mb-1">{trip.originAddress} → {trip.destAddress}</p>
       <p className="text-cg-earningsBright font-bold mb-3">{formatClp(trip.driverNetClp)}</p>
 
-      {trip.status === "ACCEPTED" || trip.status === "DRIVER_ARRIVED" ? (
-        <div className="flex gap-2">
+      {canCancel ? (
+        <div className="flex gap-2 mb-2">
           <input
             value={pinInput}
             onChange={(e) => setPinInput(e.target.value)}
@@ -336,10 +417,28 @@ function ActiveTripCard({
           </button>
         </div>
       ) : (
-        <button onClick={onComplete} className="w-full bg-cg-accent text-black font-bold rounded-xl py-3">
+        <button onClick={onComplete} className="w-full bg-cg-accent text-black font-bold rounded-xl py-3 mb-2">
           Finalizar viaje
         </button>
       )}
+
+      {canCancel && (
+        <button onClick={onCancel} className="w-full text-center text-cg-danger text-xs font-semibold py-1">
+          Cancelar viaje (aplica penalidad)
+        </button>
+      )}
+    </div>
+  );
+}
+
+function EarningsRow({ label, value, negative }: { label: string; value: number; negative?: boolean }) {
+  return (
+    <div className="flex justify-between">
+      <span className="text-slate-400">{label}</span>
+      <span className={`font-semibold ${negative ? "text-cg-danger" : "text-cg-earningsBright"}`}>
+        {negative ? "-" : ""}
+        {formatClp(Math.abs(value))}
+      </span>
     </div>
   );
 }
