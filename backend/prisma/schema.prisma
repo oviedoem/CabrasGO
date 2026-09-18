@@ -111,14 +111,15 @@ model GeofenceZone {
 }
 
 model FuelBenchmark {
-  id            String   @id @default(uuid())
-  stationName   String
-  stationCode   String
-  comuna        String   @default("Las Cabras")
-  gasoline93Clp Int
-  dieselClp     Int
-  sourceAgency  String   @default("CNE_ENAP")
-  reportedAt    DateTime @default(now())
+  id             String   @id @default(uuid())
+  stationName    String
+  stationCode    String
+  stationAddress String   @default("")
+  comuna         String   @default("Las Cabras")
+  gasoline93Clp  Int
+  dieselClp      Int
+  sourceAgency   String   @default("CNE_ENAP")
+  reportedAt     DateTime @default(now())
 }
 
 model Trip {

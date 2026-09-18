@@ -8,6 +8,12 @@ const poly = (pts: [number, number][]) => JSON.stringify(pts);
 
 async function main() {
   console.log("Seeding CabrasGo demo database...");
+  console.log(
+    "NOTA: los usuarios/conductores/pasajeros sembrados son CUENTAS DEMO (seed/test), " +
+      "no personas reales. Usan RUTs con dígito verificador válido (módulo 11) sólo " +
+      "para respetar el formato chileno; los datos de geocercas, coordenadas GPS y " +
+      "precios de combustible sí corresponden a la especificación real del proyecto."
+  );
 
   await prisma.rating.deleteMany();
   await prisma.payout.deleteMany();
@@ -85,6 +91,7 @@ async function main() {
       {
         stationName: "Copec Las Cabras Centro",
         stationCode: "COPEC_LAS_CABRAS",
+        stationAddress: "Av. Carlos Valdovinos 450, Las Cabras",
         comuna: "Las Cabras",
         gasoline93Clp: 1294,
         dieselClp: 1042,
@@ -93,6 +100,7 @@ async function main() {
       {
         stationName: "Shell Cruce Las Cabras",
         stationCode: "SHELL_CRUCE",
+        stationAddress: "Ruta H-66 km 28, Las Cabras",
         comuna: "Las Cabras",
         gasoline93Clp: 1298,
         dieselClp: 1046,
@@ -101,6 +109,7 @@ async function main() {
       {
         stationName: "Petrobras El Manzano",
         stationCode: "PETROBRAS_EL_MANZANO",
+        stationAddress: "Camino Ribereño s/n, El Manzano, Las Cabras",
         comuna: "Las Cabras",
         gasoline93Clp: 1312,
         dieselClp: 1060,
