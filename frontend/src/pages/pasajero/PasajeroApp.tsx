@@ -4,6 +4,7 @@ import { api, getUser, clearSession } from "../../lib/api";
 import { getSocket } from "../../lib/socket";
 import { formatClp, formatPatente } from "../../lib/format";
 import { LiveMap } from "../../components/LiveMap";
+import { AdBanner } from "../../components/AdBanner";
 
 interface Landmark {
   code: string;
@@ -60,6 +61,8 @@ export function PasajeroApp() {
   const [payMethod, setPayMethod] = useState<"WEBPAY_ONECLICK" | "CUENTARUT_BANCOESTADO" | "CASH">("WEBPAY_ONECLICK");
   const [score, setScore] = useState(5);
   const [tags, setTags] = useState<string[]>([]);
+  const [ads, setAds] = useState<{ id: string; title: string; bodyText: string; imageUrl: string | null }[]>([]);
+  const [cancelFeeClp, setCancelFeeClp] = useState<number | null>(null);
   const pollRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -74,6 +77,11 @@ export function PasajeroApp() {
         setQuickAccess(d.quickAccess);
         setOrigin(d.defaultOrigin);
       });
+    api.get<{ ads: typeof ads }>("/passenger/ads").then((d) => setAds(d.ads)).catch(() => {});
+    api
+      .get<{ cancellationFeePassengerClp: number }>("/passenger/cancellation-policy")
+      .then((d) => setCancelFeeClp(d.cancellationFeePassengerClp))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -164,6 +172,23 @@ export function PasajeroApp() {
     }, 2000);
   }
 
+  async function cancelTrip() {
+    if (!tripId) return;
+    const status = live?.status ?? "DISPATCHING";
+    const chargeable = ["ACCEPTED", "DRIVER_ARRIVED", "IN_PROGRESS"].includes(status);
+    const warning =
+      chargeable && cancelFeeClp
+        ? `El conductor ya aceptó tu viaje. Se cobrará una penalidad de cancelación de ${formatClp(cancelFeeClp)}. ¿Cancelar de todas formas?`
+        : "¿Cancelar la solicitud de viaje?";
+    if (!window.confirm(warning)) return;
+    try {
+      await api.post(`/passenger/trips/${tripId}/cancel`);
+      resetTrip();
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }
+
   async function pay() {
     if (!tripId) return;
     await api.post(`/passenger/trips/${tripId}/pay`, { method: payMethod });
@@ -211,12 +236,15 @@ export function PasajeroApp() {
         {error && <div className="mb-3 text-sm text-cg-danger bg-red-50 rounded-lg p-2">{error}</div>}
 
         {screen === "home" && (
-          <HomeScreen
-            origin={origin}
-            landmarks={landmarks}
-            quickAccess={quickAccess}
-            onPick={getQuote}
-          />
+          <>
+            <AdBanner ads={ads} />
+            <HomeScreen
+              origin={origin}
+              landmarks={landmarks}
+              quickAccess={quickAccess}
+              onPick={getQuote}
+            />
+          </>
         )}
 
         {screen === "categories" && quote && destination && (
@@ -237,11 +265,14 @@ export function PasajeroApp() {
             <div className="animate-spin h-12 w-12 border-4 border-cg-accent border-t-transparent rounded-full mx-auto mb-4" />
             <p className="font-semibold">Buscando conductor cercano...</p>
             <p className="text-sm text-slate-500 mt-1">PIN de verificación: <b>{pin}</b></p>
+            <button onClick={cancelTrip} className="mt-6 text-sm text-cg-danger font-semibold">
+              Cancelar solicitud
+            </button>
           </div>
         )}
 
         {screen === "tracking" && live && (
-          <TrackingScreen live={live} pin={pin} onPay={() => setScreen("payment")} />
+          <TrackingScreen live={live} pin={pin} onPay={() => setScreen("payment")} onCancel={cancelTrip} />
         )}
 
         {screen === "payment" && (
@@ -407,7 +438,17 @@ function CategoriesScreen({
   );
 }
 
-function TrackingScreen({ live, pin, onPay }: { live: any; pin: string; onPay: () => void }) {
+function TrackingScreen({
+  live,
+  pin,
+  onPay,
+  onCancel,
+}: {
+  live: any;
+  pin: string;
+  onPay: () => void;
+  onCancel: () => void;
+}) {
   const status = live.status;
   const statusLabel: Record<string, string> = {
     ACCEPTED: "Conductor en camino",
@@ -466,6 +507,12 @@ function TrackingScreen({ live, pin, onPay }: { live: any; pin: string; onPay: (
       {status === "IN_PROGRESS" && (
         <button onClick={onPay} className="w-full bg-cg-accent text-white font-semibold rounded-xl py-3">
           Finalizar y pagar
+        </button>
+      )}
+
+      {status !== "IN_PROGRESS" && (
+        <button onClick={onCancel} className="w-full text-center text-cg-danger text-sm font-semibold py-2">
+          Cancelar viaje
         </button>
       )}
     </div>

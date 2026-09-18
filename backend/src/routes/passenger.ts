@@ -10,6 +10,13 @@ import { driverNetPctFromConfig, getPlatformConfig } from "../lib/platformConfig
 
 export const passengerRouter = Router();
 
+// Public-safe slice of PlatformConfig so the passenger app can warn about
+// the cancellation fee before the passenger confirms cancelling.
+passengerRouter.get("/cancellation-policy", async (_req, res) => {
+  const config = await getPlatformConfig();
+  res.json({ cancellationFeePassengerClp: config.cancellationFeePassengerClp });
+});
+
 passengerRouter.get("/ads", async (req, res) => {
   const ads = await prisma.adCampaign.findMany({
     where: { active: true, OR: [{ targetAudience: "PASAJERO" }, { targetAudience: "AMBOS" }] },

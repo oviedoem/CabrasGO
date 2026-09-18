@@ -106,12 +106,44 @@ Tarifa = [ B + (D_pav·C_pav) + (D_ripio·C_ripio) + (T_est·C_min) ] × M_estiv
 - `M_estival` = multiplicador dinámico por geocerca (ej. 1.35× en Llallauquén / Marina Golf en temporada alta)
 - `F_combustible = 1 + ((precioPromedioActual − 1.250) / 1.250 × 0.25)`, con banda de amortiguación: si `|F − 1.00| < 0.02` se redondea a `1.00`.
 - El precio de referencia de combustible sólo se re-indexa cuando varía más de **$25 CLP/L** respecto del último benchmark (`FUEL_PRICE_SYNC_TRIGGER_CLP` en `backend/src/lib/fare.ts`).
-- Split 85% conductor / 15% comisión comunal (`splitFare`).
+- Split conductor/plataforma (`splitFare`), configurable por el admin entre
+  70%-85% neto conductor (15%-30% comisión), 85%/15% por defecto — ver
+  "Modelo de negocio y comisiones" más abajo.
 
 Implementation: `backend/src/lib/fare.ts` (constants + `computeFare`),
 consumed by `backend/src/lib/quote.ts` (quote endpoint) and
 `backend/src/routes/passenger.ts` (trip request, which persists the same
 computation on the `Trip` row).
+
+## Modelo de negocio y comisiones
+
+Admin-editable via the "Modelo de Negocio" tab / `PlatformConfig`
+(`backend/src/lib/platformConfig.ts`, `backend/src/routes/admin.ts`):
+
+- **Comisión de plataforma**: 15%-30% (70%-85% neto conductor),
+  `GET/PUT /api/v1/admin/config`. Every new trip request reads the live
+  value — no restart needed.
+- **Penalidades de cancelación**: cargo configurable al pasajero o al
+  conductor cuando cancelan después de la aceptación del viaje
+  (`POST /passenger/trips/:id/cancel`, `POST /driver/trips/:id/cancel`).
+- **Bono por meta semanal**: umbral de viajes y monto configurables;
+  otorgado automáticamente al completar un viaje que cruza el umbral
+  dentro de la semana en curso (`backend/src/lib/weeklyBonus.ts`).
+- **Publicidad in-app**: campañas (`AdCampaign`) con CRUD en el admin,
+  renderizadas como banner en la app pasajero/conductor
+  (`GET /passenger/ads`, `GET /driver/ads`).
+- **Conductores VIP**: suscripción marcada con una cuota mensual
+  configurable; los conductores VIP reciben prioridad de despacho dentro
+  de su mismo nivel de cercanía (`PUT /admin/drivers/:id/vip`).
+- La billetera del conductor (`GET /driver/wallet`) desglosa el ingreso en
+  tarifa base, tarifa dinámica/surge, propinas, bono semanal y
+  compensación/penalidad por cancelación en vez de un solo saldo plano.
+- `GET /admin/business/overview` agrega comisión, cancelaciones, VIP,
+  bonos y campañas para el dashboard, calculado desde datos reales.
+
+Ver la sección "Business / commission model" de `CLAUDE.md` para el
+detalle completo, incluyendo por qué este stack tiene costo operativo
+casi nulo comparado con Uber.
 
 ## Domain facts (VI Región / Las Cabras)
 
