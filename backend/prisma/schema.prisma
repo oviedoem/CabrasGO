@@ -1,0 +1,200 @@
+// CabrasGo — Prisma schema (SQLite, demo/dev datasource)
+//
+// This schema is a SQLite-adapted version of the authoritative Postgres+PostGIS
+// schema from "Fase 1.4 — Manual Técnico y de Integración" (section 2). SQLite
+// differs from the reference Postgres schema in three ways:
+//   1. No PostGIS: GeofenceZone.boundaryPolygon (PostGIS `geometry(Polygon,4326)`)
+//      becomes `boundaryPolygonJson`, a JSON string of [ [lat,lng], ... ]
+//      vertices. Point-in-polygon containment is computed in TypeScript (see
+//      src/lib/geofence.ts) instead of a PostGIS ST_Contains query.
+//   2. No native enum type: Prisma's SQLite connector does not support `enum`,
+//      so every enum from the reference schema (Role, VehicleCategory,
+//      TripStatus, PaymentMethod, PaymentStatus, DriverOperationalStatus)
+//      is a `String` column here. The allowed literal values are documented
+//      next to each field and enforced as TypeScript union types in
+//      src/types.ts — application code never writes an out-of-set value.
+//   3. No native string array: Rating.feedbackTags (Postgres `String[]`)
+//      becomes `feedbackTagsJson`, a JSON-encoded string decoded in the
+//      application layer.
+//
+// To move to production Postgres+PostGIS, swap the `datasource` block below for:
+//
+//   datasource db {
+//     provider   = "postgresql"
+//     url        = env("DATABASE_URL")
+//     extensions = [postgis]
+//   }
+//   generator client {
+//     provider        = "prisma-client-js"
+//     previewFeatures = ["postgresqlExtensions"]
+//   }
+//
+// ...then restore the six `enum` blocks and the fields that reference them,
+// restore `boundaryPolygon Unsupported("geometry(Polygon, 4326)")` on
+// GeofenceZone, and change `feedbackTagsJson` back to `feedbackTags String[]`.
+// The fare algorithm, REST contracts and trip lifecycle logic are
+// provider-agnostic and need no changes.
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String   @id @default(uuid())
+  rut          String   @unique
+  firstName    String
+  lastName     String
+  email        String   @unique
+  phone        String
+  passwordHash String
+  /// PASSENGER | DRIVER | ADMIN | DISPATCHER
+  role         String   @default("PASSENGER")
+  ratingAvg    Decimal  @default(5.00)
+  totalTrips   Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  passengerTrips  Trip[]   @relation("PassengerTrips")
+  driverProfile   Driver?
+  ratingsGiven    Rating[] @relation("RatingsGiven")
+  ratingsReceived Rating[] @relation("RatingsReceived")
+}
+
+model Driver {
+  id                 String   @id @default(uuid())
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  licenseNumber      String
+  licenseExpiry      DateTime
+  soapExpiry         DateTime
+  technicalReviewExp DateTime
+  isKycVerified      Boolean  @default(false)
+  /// OFFLINE | AVAILABLE | EN_ROUTE_PICKUP | ON_TRIP | SUSPENDED
+  operationalStatus  String   @default("OFFLINE")
+  walletBalanceClp   Int      @default(0)
+  bankAccountRut     String
+  bankCode           String   @default("012")
+
+  vehiclePlate String @unique
+  vehicleModel String
+  /// STANDARD_SEDAN | RURAL_4X4_XL
+  vehicleCategory String @default("STANDARD_SEDAN")
+  has4x4          Boolean @default(false)
+
+  currentLatitude  Decimal?
+  currentLongitude Decimal?
+  lastPingAt       DateTime?
+  headingDeg       Decimal?
+  speedKmh         Decimal?
+  batteryPct       Int?      @default(100)
+
+  trips   Trip[]   @relation("DriverTrips")
+  payouts Payout[]
+}
+
+model GeofenceZone {
+  id                   String   @id @default(uuid())
+  code                 String   @unique
+  name                 String
+  isHighDemand         Boolean  @default(false)
+  dynamicMultiplier    Decimal  @default(1.00)
+  require4x4           Boolean  @default(false)
+  dirtRoadSurchargeClp Int      @default(0)
+  // JSON string of [[lat, lng], ...] polygon vertices (see header note).
+  boundaryPolygonJson  String
+  createdAt            DateTime @default(now())
+}
+
+model FuelBenchmark {
+  id            String   @id @default(uuid())
+  stationName   String
+  stationCode   String
+  comuna        String   @default("Las Cabras")
+  gasoline93Clp Int
+  dieselClp     Int
+  sourceAgency  String   @default("CNE_ENAP")
+  reportedAt    DateTime @default(now())
+}
+
+model Trip {
+  id          String  @id @default(uuid())
+  passengerId String
+  passenger   User    @relation("PassengerTrips", fields: [passengerId], references: [id])
+  driverId    String?
+  driver      Driver? @relation("DriverTrips", fields: [driverId], references: [id])
+
+  /// REQUESTED | DISPATCHING | ACCEPTED | DRIVER_ARRIVED | IN_PROGRESS | COMPLETED | CANCELLED
+  status String @default("REQUESTED")
+  /// STANDARD_SEDAN | RURAL_4X4_XL
+  category        String @default("STANDARD_SEDAN")
+  pinVerification String
+
+  originAddress String
+  originLat     Decimal
+  originLng     Decimal
+  destAddress   String
+  destLat       Decimal
+  destLng       Decimal
+
+  distanceKmTotal Decimal
+  distanceKmPaved Decimal
+  distanceKmDirt  Decimal
+
+  geofenceZoneCode  String?
+  dynamicMultiplier Decimal @default(1.00)
+  fuelFactor        Decimal @default(1.00)
+
+  fareGrossClp   Int
+  driverNetClp   Int
+  platformFeeClp Int
+
+  /// WEBPAY_ONECLICK | CUENTARUT_BANCOESTADO | CASH
+  paymentMethod String @default("WEBPAY_ONECLICK")
+  /// PENDING | AUTHORIZED | CAPTURED | FAILED | REFUNDED
+  paymentStatus     String  @default("PENDING")
+  paymentGatewayRef String?
+
+  // Simulated live driver position for this trip (server-side movement sim)
+  liveLat Decimal?
+  liveLng Decimal?
+
+  requestedAt DateTime  @default(now())
+  acceptedAt  DateTime?
+  arrivedAt   DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+  cancelledAt DateTime?
+
+  rating Rating?
+}
+
+model Rating {
+  id         String @id @default(uuid())
+  tripId     String @unique
+  trip       Trip   @relation(fields: [tripId], references: [id])
+  fromUserId String
+  fromUser   User   @relation("RatingsGiven", fields: [fromUserId], references: [id])
+  toUserId   String
+  toUser     User   @relation("RatingsReceived", fields: [toUserId], references: [id])
+  score      Int
+  // JSON-encoded string[] (see header note)
+  feedbackTagsJson String   @default("[]")
+  tipClp           Int      @default(0)
+  createdAt        DateTime @default(now())
+}
+
+model Payout {
+  id         String   @id @default(uuid())
+  driverId   String
+  driver     Driver   @relation(fields: [driverId], references: [id])
+  amountClp  Int
+  bankTarget String
+  tefRefCode String
+  status     String   @default("PROCESSED")
+  executedAt DateTime @default(now())
+}
