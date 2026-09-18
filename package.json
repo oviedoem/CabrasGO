@@ -1,0 +1,17 @@
+{
+  "name": "cabrasgo",
+  "private": true,
+  "version": "1.0.0",
+  "description": "CabrasGo — ride-sharing/mobility platform for Las Cabras, Peumo, San Vicente and the Lago Rapel basin (VI Región, Chile).",
+  "scripts": {
+    "setup": "npm run setup:backend && npm run setup:frontend",
+    "setup:backend": "npm --prefix backend install && npm --prefix backend run prisma:generate && npm --prefix backend run prisma:push && npm --prefix backend run seed",
+    "setup:frontend": "npm --prefix frontend install",
+    "dev": "concurrently -n backend,frontend -c green,cyan \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "seed": "npm --prefix backend run seed"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
