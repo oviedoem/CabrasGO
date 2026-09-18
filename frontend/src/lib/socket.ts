@@ -4,7 +4,8 @@ let socket: Socket | null = null;
 
 export function getSocket(): Socket {
   if (!socket) {
-    socket = io({ path: "/socket.io" });
+    const url = import.meta.env.VITE_API_URL || undefined;
+    socket = url ? io(url, { path: "/socket.io" }) : io({ path: "/socket.io" });
   }
   return socket;
 }
